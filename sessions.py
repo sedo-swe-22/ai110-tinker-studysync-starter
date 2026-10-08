@@ -1,13 +1,16 @@
 """
 StudySync -- Session Log (Ticket 2, Tinker 2B).
 
-TICKET: the click counter below doesn't survive a Streamlit rerun. The
-session list accepts empty subjects and bad durations. PlainSession is
-still a hand-written class. Recurring sessions and time conflicts aren't
-detected yet.
+Session log helpers: a rerun-safe click counter (st.session_state), a
+validated session list, a SessionDC dataclass alongside the hand-written
+PlainSession, next_occurrence() for recurring sessions, and
+find_conflicts() for sessions sharing a time slot.
 """
 
-from datetime import date, timedelta
+import warnings
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from itertools import combinations
 
 FREQUENCY_DAYS = {"daily": 1, "weekly": 7}
 
@@ -22,9 +25,11 @@ class PlainSession:
         return f"PlainSession(subject={self.subject!r}, minutes={self.minutes}, priority={self.priority!r})"
 
 
-# TODO (Part 3): from dataclasses import dataclass, then define SessionDC as
-# a @dataclass with the same three fields as PlainSession: subject, minutes,
-# priority="medium".
+@dataclass
+class SessionDC:
+    subject: str
+    minutes: int
+    priority: str = "medium"
 
 
 def next_occurrence(last_date: date, frequency: str) -> date:
@@ -32,9 +37,25 @@ def next_occurrence(last_date: date, frequency: str) -> date:
     Return the next scheduled date given the last session date and a
     frequency label ("daily" or "weekly"), using FREQUENCY_DAYS and timedelta.
     """
-    # TODO (Part 4): look up the day count for `frequency` in FREQUENCY_DAYS
-    # and add that many days to last_date using timedelta.
-    raise NotImplementedError
+    key = frequency.strip().lower() if isinstance(frequency, str) else frequency
+    if key not in FREQUENCY_DAYS:
+        raise ValueError(f"Unknown frequency {frequency!r}; expected one of {list(FREQUENCY_DAYS)}")
+    return last_date + timedelta(days=FREQUENCY_DAYS[key])
+
+
+def _normalize_slot(slot):
+    """Return a comparable slot string, or None if the slot is unusable.
+
+    "8:00", "08:00" and " 08:00 " all normalize to "08:00". Non-time labels
+    are compared case-insensitively.
+    """
+    if not isinstance(slot, str) or not slot.strip():
+        return None
+    slot = slot.strip()
+    try:
+        return datetime.strptime(slot, "%H:%M").strftime("%H:%M")
+    except ValueError:
+        return slot.lower()
 
 
 def find_conflicts(sessions: list) -> list:
@@ -44,9 +65,17 @@ def find_conflicts(sessions: list) -> list:
     Return a list of (session_a, session_b) tuples for every pair that shares
     the same "slot". Must NOT crash on an empty list or a list with no conflicts.
     """
-    # TODO (Part 4): implement without crashing on empty input. A simple
-    # nested loop comparing each pair once is fine.
-    raise NotImplementedError
+    # Keep only entries that can actually be compared: dicts with a usable slot.
+    schedulable = []
+    for s in sessions or []:
+        slot = _normalize_slot(s.get("slot")) if isinstance(s, dict) else None
+        if slot is None:
+            warnings.warn(f"find_conflicts: skipping entry with no usable slot: {s!r}", stacklevel=2)
+            continue
+        schedulable.append((slot, s))
+
+    # combinations() yields each unordered pair exactly once (and nothing for 0-1 items).
+    return [(a, b) for (slot_a, a), (slot_b, b) in combinations(schedulable, 2) if slot_a == slot_b]
 
 
 def render_session_log_tab():
@@ -60,11 +89,13 @@ def render_session_log_tab():
         count += 1
     st.metric("Sessions logged (broken)", count)
 
-    # TODO (Part 1): initialize st.session_state.fixed_count once, then
-    # increment it here instead of the broken counter above.
+    # session_state persists across reruns; initialize only once.
+    if "fixed_count" not in st.session_state:
+        st.session_state.fixed_count = 0
+
     if st.button("Log a session (fixed)"):
-        pass
-    st.metric("Sessions logged (fixed)", 0)  # TODO: display st.session_state.fixed_count.
+        st.session_state.fixed_count += 1
+    st.metric("Sessions logged (fixed)", st.session_state.fixed_count)
 
     st.divider()
     st.subheader("Part 2: Session List (with validation)")
@@ -76,9 +107,12 @@ def render_session_log_tab():
     duration = st.number_input("Duration (minutes)", value=30, step=1)
 
     if st.button("Add session"):
-        # TODO (Part 2): reject an empty/whitespace-only subject and a
-        # duration that isn't > 0. Show st.error(...) instead of appending.
-        st.session_state.mini_sessions.append({"subject": subject, "duration": duration})
+        if not subject.strip():
+            st.error("Subject cannot be empty or whitespace-only.")
+        elif duration <= 0:
+            st.error(f"Duration must be greater than 0 minutes (got {duration}).")
+        else:
+            st.session_state.mini_sessions.append({"subject": subject.strip(), "duration": duration})
 
     st.write(st.session_state.mini_sessions)
 
@@ -90,18 +124,15 @@ def render_session_log_tab():
             {"subject": "Chem Lab", "slot": "08:00"},
             {"subject": "History", "slot": "09:00"},
         ]
-        try:
-            conflicts = find_conflicts(sample)
-            st.write(conflicts if conflicts else "No conflicts found.")
-        except NotImplementedError:
-            st.warning("🚧 find_conflicts() isn't implemented yet -- that's Tinker 2B Part 4.")
+        conflicts = find_conflicts(sample)
+        st.write(conflicts if conflicts else "No conflicts found.")
 
 
 if __name__ == "__main__":
     plain = PlainSession("Study group: Calc II", 45, priority="high")
     print(plain)
-    # TODO (Part 3): create a SessionDC with the same values and print it too --
-    # compare the two __repr__ outputs and the amount of code each required.
+    dc = SessionDC("Study group: Calc II", 45, priority="high")
+    print(dc)
 
     print(next_occurrence(date(2026, 1, 1), "daily"))
     print(next_occurrence(date(2026, 1, 1), "weekly"))
